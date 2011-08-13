@@ -51,17 +51,17 @@ def tidy(d,report=False):
                     print 'Deleting broken symlink: %s->%s' % (path,target_path)
                     os.remove(path)                    
 
-def get_target_paths(to_dir,report=False):
-    """Return the list of absolute paths to link to for a given to_dir.
+def get_target_paths(source_dir,report=False):
+    """Return the list of absolute paths to link to for a given source_dir.
     
-    This handles skipping various types of filename in to_dir and
+    This handles skipping various types of filename in source_dir and
     resolving host-specific filenames.
     
     """
     paths = []
-    filenames = os.listdir(to_dir)
+    filenames = os.listdir(source_dir)
     for filename in filenames:
-        path = os.path.join(to_dir,filename)
+        path = os.path.join(source_dir,filename)
         if filename.endswith('~'):
             if report:
                 print 'Skipping %s' % filename
@@ -117,68 +117,69 @@ def check_file(root, fn, report):
     else:
         return True
 
-def get_dotfiles(to_dir, report = False):
-    """Return the list of absolute paths to link to for a given to_dir."""
+def get_dotfiles(source_dir, report = False):
+    """Return the list of absolute paths to link to for a given source_dir."""
     paths = {}
-    for root, dirs, files in os.walk(to_dir):
+    for root, dirs, files in os.walk(source_dir):
         dirs[:] = [d for d in dirs if d not in skipDirs]
         files[:] = [f for f in files if check_file(root, f, report)]
         paths[root] = {'root': root, 'dirs': dirs, 'files': files}
     
-    topdir = paths.pop(to_dir)
-    to_dot_files = [os.path.join(topdir['root'], f) for f in topdir['files']]
-    to_dot_dirs = [os.path.join(topdir['root'], d) for d in topdir['dirs']]
-    to_dirs, to_files = [], []
+    topdir = paths.pop(source_dir)
+    source_dot_files = [os.path.join(topdir['root'], f) for f in topdir['files']]
+    source_dot_dirs = [os.path.join(topdir['root'], d) for d in topdir['dirs']]
+    source_dirs, source_files = [], []
     keys = sorted(paths.keys())
     for path in keys:
         dat = paths[path]
         root, dirs, files = dat['root'], dat['dirs'], dat['files']
         for d in dirs:
-            to_dirs.append(os.path.join(root, d))
+            source_dirs.append(os.path.join(root, d))
         for f in files:
-            to_files.append(os.path.join(root, f))
-    outpaths = {'dot_dirs': to_dot_dirs,
-            'dot_files': to_dot_files,
-            'sub_dirs': to_dirs,
-            'sub_files': to_files}
+            source_files.append(os.path.join(root, f))
+    outpaths = {'dot_dirs': source_dot_dirs,
+            'dot_files': source_dot_files,
+            'sub_dirs': source_dirs,
+            'sub_files': source_files}
     return outpaths
 
-def link(from_dir, to_dir, report = False):
-    """Make symlinks in from_dir to each file and directory in to_dir.
+def link(target_dir, source_dir, report = False):
+    """Make symlinks in target_dir to each file in source_dir.  Also makes
+    directories as needed.
 
     Arguments:
-    from_dir -- The directory in which symlinks will be created (string,
+    target_dir -- The directory in which symlinks will be created (string,
                 absolute path)
-    to_dir   -- The directory containing the files and directories that
+    source_dir   -- The directory containing the files and directories that
                 will be linked to (string, absolute path)
     
     Keyword arguments:
     report   -- If report is True then only report on the status of
-                symlinks in from_dir, don't actually create any new
+                symlinks in target_dir, don't actually create any new
                 symlinks (default: False)
     """
-    to_paths = get_dotfiles(to_dir, report)
-    dirs = to_paths['dot_dirs']
-    dirs.extend(to_paths['sub_dirs'])
-    files = to_paths['dot_files']
-    files.extend(to_paths['sub_files'])
+    source_paths = get_dotfiles(source_dir, report)
+    dirs = source_paths['dot_dirs']
+    dirs.extend(source_paths['sub_dirs'])
+    files = source_paths['dot_files']
+    files.extend(source_paths['sub_files'])
     outdirs = []
     symlinks = {}
     for p in dirs:
-        p_stub = os.path.relpath(p, to_dir)
+        p_stub = os.path.relpath(p, source_dir)
         p2 = '.' + p_stub
-        outp = os.path.join(from_dir, p2)
+        outp = os.path.join(target_dir, p2)
         outdirs.append(outp)
     for f in files:
-        infn = process_file(f, to_paths, report)
+        infn = process_file(f, source_paths, report)
         if infn:
             # remove hostname specifiers
             parts = infn.split(HOSTNAME_SEPARATOR)
             assert len(parts) == 1 or len(parts) == 2
             out = parts[0]
-            f_stub = os.path.relpath(out, to_dir)
+            f_stub = os.path.relpath(out, source_dir)
             f2 = '.' + f_stub
-            outf = os.path.join(from_dir, f2)
+            outf = os.path.join(target_dir, f2)
             symlinks[infn] = outf
    
     for d in outdirs:
@@ -224,7 +225,7 @@ def link(from_dir, to_dir, report = False):
                 print 'Making symlink %s -> %s' % (target, source)
                 os.symlink(source, target)
 
-def process_file(f, to_paths, report = False):
+def process_file(f, source_paths, report = False):
     tmp, filename = os.path.split(f)
     if filename.endswith('~'):
         if report:
@@ -253,7 +254,7 @@ def process_file(f, to_paths, report = False):
         else:
             # This appears to be a filename without a trailing
             # hostname.
-            if f + HOSTNAME_SEPARATOR + HOSTNAME in to_paths['dot_files']: 
+            if f + HOSTNAME_SEPARATOR + HOSTNAME in source_paths['dot_files']: 
                 if report:
                     print 'Skipping %s (there is a host-specific version of this file for this host)' % filename
             else:
@@ -263,14 +264,14 @@ def process_file(f, to_paths, report = False):
 def usage():
     return """Usage:
 
-dotfilemanager link|tidy|report [FROM_DIR [TO_DIR]]
+dotfilemanager link|tidy|report [TARGET_DIR [SOURCE_DIR]]
     
 Commands:
-   link -- make symlinks in FROM_DIR to files and directories in TO_DIR
-   tidy -- remove broken symlinks from FROM_DIR (but not subdirectories)
-   report -- report on symlinks in FROM_DIR and files and directories in TO_DIR
+   link -- make symlinks in TARGET_DIR to files and directories in SOURCE_DIR
+   tidy -- remove broken symlinks from TARGET_DIR (but not subdirectories)
+   report -- report on symlinks in TARGET_DIR and files and directories in SOURCE_DIR
    
-FROM_DIR defaults to ~ and TO_DIR defaults to ~/.dotfiles.
+TARGET_DIR defaults to ~ and SOURCE_DIR defaults to ~/.dotfiles.
    """
 
 if __name__ == "__main__":
@@ -281,36 +282,36 @@ if __name__ == "__main__":
         sys.exit(2)
 
     try:
-        FROM_DIR = sys.argv[2]
+        TARGET_DIR = sys.argv[2]
     except IndexError:
-        FROM_DIR = '~'
-    FROM_DIR = os.path.abspath(os.path.expanduser(FROM_DIR))
+        TARGET_DIR = '~'
+    TARGET_DIR = os.path.abspath(os.path.expanduser(TARGET_DIR))
 
-    if not os.path.isdir(FROM_DIR):
-        print "FROM_DIR %s is not a directory!" % FROM_DIR
+    if not os.path.isdir(TARGET_DIR):
+        print "TARGET_DIR %s is not a directory!" % TARGET_DIR
         print usage()
         sys.exit(2)
 
     if ACTION == 'tidy':
-        tidy(FROM_DIR)
+        tidy(TARGET_DIR)
     else:
 
         try:
-            TO_DIR = sys.argv[3]
+            SOURCE_DIR = sys.argv[3]
         except IndexError:
-            TO_DIR = os.path.join('~','.dotfiles')
-        TO_DIR = os.path.abspath(os.path.expanduser(TO_DIR))
+            SOURCE_DIR = os.path.join('~','.dotfiles')
+        SOURCE_DIR = os.path.abspath(os.path.expanduser(SOURCE_DIR))
 
-        if not os.path.isdir(TO_DIR):
-            print "TO_DIR %s is not a directory!" % TO_DIR
+        if not os.path.isdir(SOURCE_DIR):
+            print "SOURCE_DIR %s is not a directory!" % SOURCE_DIR
             print usage()
             sys.exit(2)
 
         if ACTION == 'link':
-            link(FROM_DIR,TO_DIR)
+            link(TARGET_DIR, SOURCE_DIR)
         elif ACTION == 'report':
-            link(FROM_DIR,TO_DIR,report=True)
-            tidy(FROM_DIR,report=True)
+            link(TARGET_DIR, SOURCE_DIR,report=True)
+            tidy(TARGET_DIR, report=True)
         else:
             print usage()
             sys.exit(2)
