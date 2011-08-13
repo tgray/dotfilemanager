@@ -5,6 +5,21 @@ and command-line arguments.
 """
 import os,sys,platform
 
+skipDirs = ['CVS',
+        'RCS',
+        '.git',
+        '.gitignore',
+        '.cvsignore',
+        '.svn',
+        '.bzr',
+        '.bzrignore',
+        '.bzrtags',
+        '.hg',
+        '.hgignore',
+        '.hgrags']
+
+dotfiles_scripts = ['dotfiles', 'dotfilemanager', 'dotfilemanager.py']
+
 # TODO: allow setting hostname as a command-line argument also?
 try:
     HOSTNAME = os.environ['DOTFILEMANAGER_HOSTNAME']
@@ -83,12 +98,54 @@ def get_target_paths(to_dir,report=False):
                     paths.append(path)    
     return paths
 
-def link(from_dir,to_dir,report=False):
+def check_file(root, fn, report):
+    fullfn = os.path.join(root, fn)
+    if fn.startswith('.'):
+        return False
+    elif fn in skipDirs:
+        if report:
+            print 'skipping %s (in skip list)' % fn
+        return False
+    elif (not os.path.isfile(fullfn)) and (not os.path.isdir(fullfn)):
+        if report:
+            print 'skipping %s (not a file/directory)' % fn
+        return False
+    elif fn.endswith('~'):
+        if report:
+            print 'skipping %s' % fn
+        return False
+    else:
+        return True
+
+def get_dotfiles(to_dir, report = False):
+    """Return the list of absolute paths to link to for a given to_dir."""
+    paths = {}
+    for root, dirs, files in os.walk(to_dir):
+        dirs[:] = [d for d in dirs if d not in skipDirs]
+        files[:] = [f for f in files if check_file(root, f, report)]
+        paths[root] = {'root': root, 'dirs': dirs, 'files': files}
+    
+    topdir = paths.pop(to_dir)
+    to_dot_files = [os.path.join(topdir['root'], f) for f in topdir['files']]
+    to_dot_dirs = [os.path.join(topdir['root'], d) for d in topdir['dirs']]
+    to_dirs, to_files = [], []
+    keys = sorted(paths.keys())
+    for path in keys:
+        dat = paths[path]
+        root, dirs, files = dat['root'], dat['dirs'], dat['files']
+        for d in dirs:
+            to_dirs.append(os.path.join(root, d))
+        for f in files:
+            to_files.append(os.path.join(root, f))
+    outpaths = {'dot_dirs': to_dot_dirs,
+            'dot_files': to_dot_files,
+            'sub_dirs': to_dirs,
+            'sub_files': to_files}
+    return outpaths
+
+def link(from_dir, to_dir, report = False):
     """Make symlinks in from_dir to each file and directory in to_dir.
 
-    This handles converting leading underscores in to_dir to leading
-    dots in from_dir.
-    
     Arguments:
     from_dir -- The directory in which symlinks will be created (string,
                 absolute path)
@@ -99,54 +156,109 @@ def link(from_dir,to_dir,report=False):
     report   -- If report is True then only report on the status of
                 symlinks in from_dir, don't actually create any new
                 symlinks (default: False)
-    
     """
-    # The paths in to_dir that we will be symlinking to.
-    to_paths = get_target_paths(to_dir,report)
-    
-    # Dictionary of symlinks we will be creating, from_path->to_path
+    to_paths = get_dotfiles(to_dir, report)
+    dirs = to_paths['dot_dirs']
+    dirs.extend(to_paths['sub_dirs'])
+    files = to_paths['dot_files']
+    files.extend(to_paths['sub_files'])
+    outdirs = []
     symlinks = {}
-    for to_path in to_paths:
-        to_directory, to_filename = os.path.split(to_path)
-        # Change leading underscores to leading dots.        
-        if to_filename.startswith('_'):
-            from_filename = '.' + to_filename[1:]
+    for p in dirs:
+        p_stub = os.path.relpath(p, to_dir)
+        p2 = '.' + p_stub
+        outp = os.path.join(from_dir, p2)
+        outdirs.append(outp)
+    for f in files:
+        infn = process_file(f, to_paths, report)
+        if infn:
+            # remove hostname specifiers
+            parts = infn.split(HOSTNAME_SEPARATOR)
+            assert len(parts) == 1 or len(parts) == 2
+            out = parts[0]
+            f_stub = os.path.relpath(out, to_dir)
+            f2 = '.' + f_stub
+            outf = os.path.join(from_dir, f2)
+            symlinks[infn] = outf
+   
+    for d in outdirs:
+        d = os.path.abspath(os.path.expanduser(d))
+        if os.path.isdir(d):
+            if report:
+                print "directory %s already exists" % d
+            continue
         else:
-            from_filename = to_filename
-        # Remove hostname specifiers.
-        parts = from_filename.split(HOSTNAME_SEPARATOR)
-        assert len(parts) == 1 or len(parts) == 2
-        from_filename = parts[0]
-        from_path = os.path.join(from_dir,from_filename)        
-        symlinks[from_path] = to_path
+            if report:
+                print "would make: %s" % d
+            else:
+                print "making %s" % d
+                os.makedirs(d)
 
-    # Attempt to create the symlinks that don't already exist.
-    for from_path,to_path in symlinks.items():                        
-        # Check that nothing already exists at from_path.
-        if os.path.islink(from_path):
+    for source, target in symlinks.items():
+        # Check that nothing already exists at target.
+        if os.path.islink(target):
             # A link already exists.
-            existing_to_path = os.readlink(from_path)
-            existing_to_path = os.path.abspath(os.path.expanduser(existing_to_path))
-            if  existing_to_path == to_path:
+            existing_source = os.readlink(target)
+            existing_source = os.path.abspath(
+                    os.path.expanduser(existing_source))
+            if  existing_source == source:
                 # It's already a link to the intended target. All is
                 # well.
+                # if report:
+                    # print 'already linked: %s' % source
                 continue
             else:
                 # It's a link to somewhere else.
-                print from_path+" => is already symlinked to "+existing_to_path
-        elif os.path.isfile(from_path):
-            print "There's a file in the way at "+from_path
-        elif os.path.isdir(from_path):
-            print "There's a directory in the way at "+from_path
-        elif os.path.ismount(from_path):
-            print "There's a mount point in the way at "+from_path
+                print target + " => is already symlinked to " + existing_source
+        elif os.path.isfile(target):
+            print "There's a file in the way at " + target
+        elif os.path.isdir(target):
+            print "There's a directory in the way at " + target
+        elif os.path.ismount(target):
+            print "There's a mount point in the way at " + target
         else:
             # The path is clear, make the symlink.
             if report:
-                print 'link would make symlink: %s->%s' % (from_path,to_path)
+                print 'would link: %s -> %s' % (target, source)
             else:
-                print 'Making symlink %s->%s' % (from_path,to_path)
-                os.symlink(to_path,from_path)
+                print 'Making symlink %s -> %s' % (target, source)
+                os.symlink(source, target)
+
+def process_file(f, to_paths, report = False):
+    tmp, filename = os.path.split(f)
+    if filename.endswith('~'):
+        if report:
+            print 'Skipping %s' % filename
+    elif (not os.path.isfile(f)) and (not os.path.isdir(f)):
+        if report:
+            print 'Skipping %s (not a file or directory)' % filename
+    elif filename.startswith('.'):
+        if report:
+            print 'Skipping %s (filename has a leading dot)' % filename
+    elif filename in dotfiles_scripts:
+        if report:
+            print 'Skipping %s (dotfile script)' % filename
+    else:
+        if HOSTNAME_SEPARATOR in filename:
+            # This appears to be a filename with a trailing
+            # hostname, e.g. _muttrc__dulip. If the trailing
+            # hostname matches the hostname of this host then we
+            # link to it.
+            hostname = filename.split(HOSTNAME_SEPARATOR)[-1]
+            if hostname == HOSTNAME:
+                return f
+            else:
+                if report:
+                    print 'Skipping %s (different hostname)' % filename
+        else:
+            # This appears to be a filename without a trailing
+            # hostname.
+            if f + HOSTNAME_SEPARATOR + HOSTNAME in to_paths['dot_files']: 
+                if report:
+                    print 'Skipping %s (there is a host-specific version of this file for this host)' % filename
+            else:
+                return f
+    return None
 
 def usage():
     return """Usage:
@@ -155,7 +267,7 @@ dotfilemanager link|tidy|report [FROM_DIR [TO_DIR]]
     
 Commands:
    link -- make symlinks in FROM_DIR to files and directories in TO_DIR
-   tidy -- remove broken symlinks from FROM_DIR
+   tidy -- remove broken symlinks from FROM_DIR (but not subdirectories)
    report -- report on symlinks in FROM_DIR and files and directories in TO_DIR
    
 FROM_DIR defaults to ~ and TO_DIR defaults to ~/.dotfiles.
